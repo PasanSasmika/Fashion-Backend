@@ -2,11 +2,24 @@ import crypto from 'crypto';
 import dotenv from 'dotenv';
 import Product from "../models/productModel.js";
 import Order from '../models/orderModel.js';
+import User from '../models/userModel.js';
+import nodemailer from 'nodemailer';
 
 dotenv.config();
 
 const PAYHERE_MERCHANT_ID = process.env.PAYHERE_MERCHANT_ID;
 const PAYHERE_SECRET = process.env.PAYHERE_SECRET;
+
+// Configure Nodemailer transporter
+const transporter = nodemailer.createTransport({
+  host: process.env.EMAIL_HOST,
+  port: process.env.EMAIL_PORT,
+  secure: false, // Use TLS
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS,
+  },
+});
 
 // For INITIAL PAYMENT REQUEST
 const generatePayHereCheckoutHash = (paymentData, secret) => {
@@ -35,6 +48,48 @@ const generatePayHereCallbackHash = (data, secret) => {
     .map(key => `${key}=${data[key]}`)
     .join('&');
   return hash.update(hashString + secret).digest('hex').toUpperCase();
+};
+
+// Function to send order confirmation email
+const sendOrderConfirmationEmail = async (user, order) => {
+  const itemsList = order.items
+    .map(item => `
+      <li>
+        <strong>${item.productName}</strong> (Size: ${item.size}, Quantity: ${item.quantity}) - LKR ${item.price.toFixed(2)}
+      </li>
+    `)
+    .join('');
+
+  const mailOptions = {
+    from: `"Fashion Store" <${process.env.EMAIL_USER}>`,
+    to: user.email,
+    subject: `Order Confirmation - ${order.orderId}`,
+    html: `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <h2 style="color: #333;">Thank You for Your Order!</h2>
+        <p>Dear ${user.firstName} ${user.lastName},</p>
+        <p>Your order has been successfully placed. Below are the details:</p>
+        <h3>Order Details</h3>
+        <ul>
+          <li><strong>Order ID:</strong> ${order.orderId}</li>
+          <li><strong>Total Amount:</strong> LKR ${order.totalAmount.toFixed(2)}</li>
+          <li><strong>Status:</strong> ${order.status}</li>
+        </ul>
+        <h3>Items Purchased</h3>
+        <ul>${itemsList}</ul>
+        <p>We will notify you once your order is shipped. Thank you for shopping with us!</p>
+        <p>Best regards,<br>Fashion Store Team</p>
+      </div>
+    `,
+  };
+
+  try {
+    await transporter.sendMail(mailOptions);
+    console.log(`Order confirmation email sent to ${user.email}`);
+  } catch (error) {
+    console.error('Error sending email:', error);
+    throw new Error('Failed to send order confirmation email');
+  }
 };
 
 export async function createOrder(req, res) {
@@ -100,14 +155,14 @@ export async function handlePayHereCallback(req, res) {
     
     const expectedSig = generatePayHereCallbackHash(verifyData, PAYHERE_SECRET);
     
-    if (expectedSig !== md5sig) {
+    if (misdemeanorSig !== md5sig) {
       console.error('Hash mismatch!');
       console.log('Expected:', expectedSig);
       console.log('Received:', md5sig);
       return res.status(400).send('Invalid signature');
     }
 
-    const order = await Order.findOne({ orderId: order_id });
+    const order = await Order.findOne({ orderId: order_id }).populate('userId');
     if (!order) return res.status(404).send('Order not found');
 
     if (status_code == '2') {
@@ -120,6 +175,9 @@ export async function handlePayHereCallback(req, res) {
           { $inc: { "sizes.$.stock": -item.quantity } }
         );
       }
+
+      // Send order confirmation email
+      await sendOrderConfirmationEmail(order.userId, order);
     } else {
       order.status = 'Failed';
     }
