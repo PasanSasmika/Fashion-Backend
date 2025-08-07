@@ -2,11 +2,21 @@ import crypto from 'crypto';
 import dotenv from 'dotenv';
 import Product from "../models/productModel.js";
 import Order from '../models/orderModel.js';
+import nodemailer from 'nodemailer';
 
 dotenv.config();
 
 const PAYHERE_MERCHANT_ID = process.env.PAYHERE_MERCHANT_ID;
 const PAYHERE_SECRET = process.env.PAYHERE_SECRET;
+
+// Email transporter setup
+const transporter = nodemailer.createTransport({
+  service: process.env.EMAIL_SERVICE,
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS
+  }
+});
 
 // For INITIAL PAYMENT REQUEST
 const generatePayHereCheckoutHash = (paymentData, secret) => {
@@ -107,7 +117,7 @@ export async function handlePayHereCallback(req, res) {
       return res.status(400).send('Invalid signature');
     }
 
-    const order = await Order.findOne({ orderId: order_id });
+    const order = await Order.findOne({ orderId: order_id }).populate('userId', 'email');
     if (!order) return res.status(404).send('Order not found');
 
     if (status_code == '2') {
@@ -120,11 +130,30 @@ export async function handlePayHereCallback(req, res) {
           { $inc: { "sizes.$.stock": -item.quantity } }
         );
       }
+      await order.save();
+
+      // Send email to user
+      if (order.userId && order.userId.email) {
+        const mailOptions = {
+          from: process.env.EMAIL_USER,
+          to: order.userId.email,
+          subject: 'Order Payment Successful',
+          text: `Dear customer,\n\nYour order ${order.orderId} has been successfully paid.\nTotal Amount: LKR ${order.totalAmount.toFixed(2)}\n\nThank you for shopping with us!`
+        };
+
+        transporter.sendMail(mailOptions, (error, info) => {
+          if (error) {
+            console.error('Error sending email:', error);
+          } else {
+            console.log('Email sent:', info.response);
+          }
+        });
+      }
     } else {
       order.status = 'Failed';
+      await order.save();
     }
 
-    await order.save();
     res.status(200).send('OK');
     
   } catch (error) {
