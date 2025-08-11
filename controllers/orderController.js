@@ -4,6 +4,8 @@ import Product from "../models/productModel.js";
 import Order from '../models/orderModel.js';
 import User from "../models/userModel.js";
 import { fileURLToPath } from 'url';
+import * as Brevo from '@getbrevo/brevo';
+import PDFDocument from 'pdfkit';
 
 dotenv.config();
 
@@ -71,7 +73,7 @@ export async function createOrder(req, res) {
 
     const paymentData = {
       merchant_id: PAYHERE_MERCHANT_ID,
-      return_url: `${process.env.FRONTEND_URL}/ordered-items/${orderId}`, // Modified to redirect to ordered items page
+      return_url: `${process.env.FRONTEND_URL}/ordered-items/${orderId}`,
       cancel_url: `${process.env.FRONTEND_URL}/cart`,
       notify_url: `${process.env.BACKEND_URL}/api/orders/notify`,
       order_id: orderId,
@@ -154,5 +156,79 @@ export async function getOrderDetails(req, res) {
   } catch (error) {
     console.error("💥 Error fetching order details:", error);
     res.status(500).json({ message: 'Error fetching order details' });
+  }
+}
+
+// Send order details via email
+export async function sendOrderEmail(req, res) {
+  try {
+    const { email } = req.body;
+    const order = await Order.findOne({ orderId: req.params.orderId });
+    if (!order) {
+      return res.status(404).json({ message: 'Order not found' });
+    }
+
+    const client = new Brevo.TransactionalEmailsApi();
+    client.authentications['api-key'].apiKey = process.env.BREVO_PASS;
+
+    const sendSmtpEmail = new Brevo.SendSmtpEmail();
+    sendSmtpEmail.subject = `Order Confirmation #${order.orderId}`;
+    sendSmtpEmail.to = [{ email }];
+    sendSmtpEmail.sender = { name: 'Fashion Store', email: process.env.BREVO_USER };
+    sendSmtpEmail.htmlContent = `
+      <h1>Order Confirmation</h1>
+      <p>Order ID: ${order.orderId}</p>
+      <p>Status: ${order.status}</p>
+      <p>Total: LKR ${order.totalAmount.toFixed(2)}</p>
+      <h2>Items:</h2>
+      <ul>
+        ${order.items.map(item => `
+          <li>
+            ${item.productName} - Size: ${item.size}, Quantity: ${item.quantity}, Price: LKR ${item.price.toFixed(2)}
+          </li>
+        `).join('')}
+      </ul>
+    `;
+
+    await client.sendTransacEmail(sendSmtpEmail);
+    res.json({ message: 'Email sent successfully' });
+  } catch (error) {
+    console.error('Error sending email:', error);
+    res.status(500).json({ message: 'Error sending email', error });
+  }
+}
+
+// Generate PDF for order
+export async function generateOrderPDF(req, res) {
+  try {
+    const order = await Order.findOne({ orderId: req.params.orderId });
+    if (!order) {
+      return res.status(404).json({ message: 'Order not found' });
+    }
+
+    const doc = new PDFDocument();
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename=order_${order.orderId}.pdf`);
+
+    doc.pipe(res);
+
+    doc.fontSize(20).text('Order Confirmation', { align: 'center' });
+    doc.moveDown();
+    doc.fontSize(14).text(`Order ID: ${order.orderId}`);
+    doc.text(`Status: ${order.status}`);
+    doc.text(`Total: LKR ${order.totalAmount.toFixed(2)}`);
+    doc.moveDown();
+    doc.fontSize(16).text('Ordered Items:');
+    
+    order.items.forEach(item => {
+      doc.moveDown(0.5);
+      doc.fontSize(12).text(`${item.productName}`);
+      doc.text(`Size: ${item.size}, Quantity: ${item.quantity}, Price: LKR ${item.price.toFixed(2)}`);
+    });
+
+    doc.end();
+  } catch (error) {
+    console.error('Error generating PDF:', error);
+    res.status(500).json({ message: 'Error generating PDF', error });
   }
 }
