@@ -3,7 +3,7 @@ import dotenv from 'dotenv';
 import Product from "../models/productModel.js";
 import Order from '../models/orderModel.js';
 import User from "../models/userModel.js";
-import nodemailer from 'nodemailer';
+import sgMail from '@sendgrid/mail';
 import pdfkit from 'pdfkit';
 import fs from 'fs';
 import path from 'path';
@@ -14,28 +14,12 @@ dotenv.config();
 const PAYHERE_MERCHANT_ID = process.env.PAYHERE_MERCHANT_ID;
 const PAYHERE_SECRET = process.env.PAYHERE_SECRET;
 
+// Set SendGrid API key
+sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+
 // Resolve __dirname for ES modules
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
-// Nodemailer transporter setup (Gmail App Password)
-const transporter = nodemailer.createTransport({
-  host: "smtp.gmail.com",
-  port: 587,
-  secure: false, // use TLS
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS
-  },
-  tls: {
-    rejectUnauthorized: false
-  }
-});
-
-// Verify SMTP connection on server start
-transporter.verify()
-  .then(() => console.log("✅ SMTP transporter ready to send emails"))
-  .catch(err => console.error("❌ SMTP connection error:", err));
 
 // Generate MD5 hash for initial payment
 function generatePayHereCheckoutHash(paymentData, secret) {
@@ -113,7 +97,7 @@ async function generateInvoicePDF(order, productMap) {
   });
 }
 
-// Email sending function with PDF attachment
+// Email sending function with PDF attachment using SendGrid
 async function sendOrderConfirmationEmail(email, order, productMap) {
   const itemsList = order.items.map(item => {
     const productName = productMap[item.productId] || 'Unknown Product';
@@ -135,21 +119,28 @@ async function sendOrderConfirmationEmail(email, order, productMap) {
     // Generate PDF
     const pdfPath = await generateInvoicePDF(order, productMap);
 
-    const info = await transporter.sendMail({
-      from: `"FreshNets" <${process.env.SMTP_USER}>`,
+    // Read PDF file for attachment
+    const pdfBuffer = fs.readFileSync(pdfPath);
+    const pdfBase64 = pdfBuffer.toString('base64');
+
+    // Send email using SendGrid
+    const msg = {
       to: email,
+      from: 'FreshNets <no-reply@freshnets.com>', // Use a verified sender email from SendGrid
       subject: `Order Confirmation - ${order.orderId}`,
-      html,
+      html: html,
       attachments: [
         {
+          content: pdfBase64,
           filename: `invoice_${order.orderId}.pdf`,
-          path: pdfPath,
-          contentType: 'application/pdf'
+          type: 'application/pdf',
+          disposition: 'attachment'
         }
       ]
-    });
+    };
 
-    console.log(`✅ Email with invoice sent to ${email}: ${info.messageId}`);
+    await sgMail.send(msg);
+    console.log(`✅ Email with invoice sent to ${email}`);
 
     // Clean up PDF file after sending
     fs.unlink(pdfPath, (err) => {
@@ -158,6 +149,7 @@ async function sendOrderConfirmationEmail(email, order, productMap) {
     });
   } catch (error) {
     console.error(`❌ Failed to send email to ${email}:`, error);
+    throw error; // Re-throw to handle in the caller
   }
 }
 
