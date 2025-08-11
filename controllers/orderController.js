@@ -176,30 +176,29 @@ export async function sendOrderEmail(req, res) {
       return res.status(404).json({ message: 'Order not found' });
     }
 
-    // Verify Brevo configuration
-    if (!process.env.BREVO_HOST || !process.env.BREVO_PORT || !process.env.BREVO_USER || !process.env.BREVO_PASS) {
-      console.error('Brevo SMTP configuration missing');
+    // Verify SMTP configuration
+    if (!process.env.SMTP_HOST || !process.env.SMTP_PORT || !process.env.SMTP_USER || !process.env.SMTP_PASS) {
+      console.error('SMTP configuration missing');
       return res.status(500).json({ message: 'Email service configuration error' });
     }
 
     // Create SMTP transporter
     const transporter = nodemailer.createTransport({
-      host: process.env.BREVO_HOST,
-      port: parseInt(process.env.BREVO_PORT),
-      secure: false, // Use STARTTLS for port 587
+      host: process.env.SMTP_HOST,
+      port: parseInt(process.env.SMTP_PORT),
+      secure: process.env.SMTP_PORT === '465', // Use SSL for port 465, STARTTLS for 587
       auth: {
-        user: process.env.BREVO_USER,
-        pass: process.env.BREVO_PASS,
+        user: process.env.SMTP_USER,
+        pass: process.env.SMTP_PASS,
       },
       tls: {
-        // Optional: Helps with self-signed certs or connection issues
-        rejectUnauthorized: false,
+        rejectUnauthorized: false, // Helps with self-signed certs
       },
     });
 
     // Email content
     const mailOptions = {
-      from: `Fashion Store <${process.env.BREVO_USER}>`,
+      from: `Fashion Store <${process.env.SMTP_USER}>`,
       to: email,
       subject: `Order Confirmation #${order.orderId}`,
       html: `
