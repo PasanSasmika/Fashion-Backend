@@ -4,12 +4,19 @@ import Product from "../models/productModel.js";
 import Order from '../models/orderModel.js';
 import User from "../models/userModel.js";
 import nodemailer from 'nodemailer';
-import { create } from 'pdfkit';
+import pdfkit from 'pdfkit';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
 dotenv.config();
 
 const PAYHERE_MERCHANT_ID = process.env.PAYHERE_MERCHANT_ID;
 const PAYHERE_SECRET = process.env.PAYHERE_SECRET;
+
+// Resolve __dirname for ES modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // Nodemailer transporter setup (Gmail App Password)
 const transporter = nodemailer.createTransport({
@@ -65,55 +72,45 @@ function generatePayHereCallbackHash(data, secret) {
     .toUpperCase();
 }
 
-// Generate LaTeX content for PDF
-function generateOrderConfirmationLatex(order, user, productMap) {
-  const itemsList = order.items.map(item => {
-    const productName = productMap[item.productId] || 'Unknown Product';
-    return `
-      \\item ${productName} -- Size: ${item.size}, Quantity: ${item.quantity}
-    `;
-  }).join('');
+// Generate PDF invoice
+async function generateInvoicePDF(order, productMap) {
+  return new Promise((resolve, reject) => {
+    const doc = new pdfkit();
+    const fileName = `invoice_${order.orderId}.pdf`;
+    const filePath = path.join(__dirname, '..', 'invoices', fileName);
 
-  return `
-    \\documentclass[a4paper,12pt]{article}
-    \\usepackage[utf8]{inputenc}
-    \\usepackage{geometry}
-    \\geometry{margin=1in}
-    \\usepackage{parskip}
-    \\usepackage{booktabs}
-    \\usepackage{noto}
+    // Ensure invoices directory exists
+    const invoicesDir = path.join(__dirname, '..', 'invoices');
+    if (!fs.existsSync(invoicesDir)) {
+      fs.mkdirSync(invoicesDir, { recursive: true });
+    }
 
-    \\begin{document}
+    const stream = fs.createWriteStream(filePath);
+    doc.pipe(stream);
 
-    \\begin{center}
-      \\textbf{\\large FreshNets Order Confirmation}\\\\
-      \\vspace{0.5cm}
-      Order ID: ${order.orderId}\\\\
-      Date: ${new Date().toLocaleDateString()}
-    \\end{center}
+    // PDF content
+    doc.fontSize(20).text('Order Invoice', { align: 'center' });
+    doc.moveDown();
+    doc.fontSize(14).text(`Order ID: ${order.orderId}`);
+    doc.text(`Date: ${new Date().toLocaleDateString()}`);
+    doc.moveDown();
+    doc.text('Items:', { underline: true });
 
-    \\section*{Customer Details}
-    Name: ${user.firstName} ${user.lastName}\\\\
-    Email: ${user.email}
+    order.items.forEach(item => {
+      const productName = productMap[item.productId] || 'Unknown Product';
+      doc.fontSize(12).text(`${productName} - Size: ${item.size}, Quantity: ${item.quantity}`);
+    });
 
-    \\section*{Order Details}
-    \\begin{tabular}{ll}
-      \\toprule
-      \\textbf{Total Amount} & ${order.totalAmount} LKR \\\\
-      \\textbf{Status} & ${order.status} \\\\
-      \\midrule
-    \\end{tabular}
+    doc.moveDown();
+    doc.text(`Total Amount: ${order.totalAmount} LKR`, { align: 'right' });
+    doc.moveDown();
+    doc.text('Thank you for shopping with FreshNets!', { align: 'center' });
 
-    \\section*{Items Purchased}
-    \\begin{itemize}
-      ${itemsList}
-    \\end{itemize}
+    doc.end();
 
-    \\vspace{1cm}
-    Thank you for shopping with FreshNets!
-
-    \\end{document}
-  `;
+    stream.on('finish', () => resolve(filePath));
+    stream.on('error', (err) => reject(err));
+  });
 }
 
 // Email sending function with PDF attachment
@@ -130,20 +127,14 @@ async function sendOrderConfirmationEmail(email, order, productMap) {
     <p><strong>Total Amount:</strong> ${order.totalAmount} LKR</p>
     <h2>Items:</h2>
     <ul>${itemsList}</ul>
-    <p>Please find your order confirmation attached as a PDF.</p>
+    <p>Please find the invoice attached.</p>
     <p>Thank you for shopping with FreshNets!</p>
   `;
 
-  // Generate LaTeX content
-  const user = await User.findById(order.userId);
-  const latexContent = generateOrderConfirmationLatex(order, user, productMap);
-
-  // Simulate PDF generation (Note: Actual PDF generation requires a LaTeX compiler like pdflatex)
-  // For this example, we'll assume a function `latexToPDFBase64` exists to convert LaTeX to base64-encoded PDF
-  // In a real implementation, you would use a library like `pdfkit` or a LaTeX server
-  const pdfBase64 = Buffer.from(latexContent).toString('base64'); // Placeholder; replace with actual PDF generation
-
   try {
+    // Generate PDF
+    const pdfPath = await generateInvoicePDF(order, productMap);
+
     const info = await transporter.sendMail({
       from: `"FreshNets" <${process.env.SMTP_USER}>`,
       to: email,
@@ -151,16 +142,22 @@ async function sendOrderConfirmationEmail(email, order, productMap) {
       html,
       attachments: [
         {
-          filename: `order-confirmation-${order.orderId}.pdf`,
-          content: pdfBase64,
-          encoding: 'base64',
+          filename: `invoice_${order.orderId}.pdf`,
+          path: pdfPath,
           contentType: 'application/pdf'
         }
       ]
     });
-    console.log(`✅ Email with PDF sent to ${email}: ${info.messageId}`);
+
+    console.log(`✅ Email with invoice sent to ${email}: ${info.messageId}`);
+
+    // Clean up PDF file after sending
+    fs.unlink(pdfPath, (err) => {
+      if (err) console.error(`❌ Failed to delete PDF file: ${err}`);
+      else console.log(`🗑️ Deleted PDF file: ${pdfPath}`);
+    });
   } catch (error) {
-    console.error(`❌ Failed to send email with PDF to ${email}:`, error);
+    console.error(`❌ Failed to send email to ${email}:`, error);
   }
 }
 
@@ -245,10 +242,10 @@ export async function handlePayHereCallback(req, res) {
         );
       }
 
-      // Fetch user and products for email and PDF
+      // Fetch user and products for email
       const user = await User.findById(order.userId);
       if (user && user.email) {
-        console.log("📩 Sending order confirmation with PDF to", user.email);
+        console.log("📩 Sending order confirmation to", user.email);
 
         const productIds = order.items.map(item => item.productId);
         const products = await Product.find({ productId: { $in: productIds } });
