@@ -5,8 +5,6 @@ import Order from '../models/orderModel.js';
 import User from "../models/userModel.js";
 import sgMail from '@sendgrid/mail';
 import pdfkit from 'pdfkit';
-import fs from 'fs';
-import path from 'path';
 import { fileURLToPath } from 'url';
 
 dotenv.config();
@@ -19,7 +17,6 @@ sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
 // Resolve __dirname for ES modules
 const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 // Generate MD5 hash for initial payment
 function generatePayHereCheckoutHash(paymentData, secret) {
@@ -56,44 +53,45 @@ function generatePayHereCallbackHash(data, secret) {
     .toUpperCase();
 }
 
-// Generate PDF invoice
+// Generate PDF invoice in memory
 async function generateInvoicePDF(order, productMap) {
   return new Promise((resolve, reject) => {
-    const doc = new pdfkit();
-    const fileName = `invoice_${order.orderId}.pdf`;
-    const filePath = path.join(__dirname, '..', 'invoices', fileName);
+    try {
+      const doc = new pdfkit();
+      const buffers = [];
+      doc.on('data', buffers.push.bind(buffers));
+      doc.on('end', () => {
+        const pdfBuffer = Buffer.concat(buffers);
+        resolve(pdfBuffer);
+      });
+      doc.on('error', (err) => {
+        console.error('❌ PDF generation error:', err);
+        reject(err);
+      });
 
-    // Ensure invoices directory exists
-    const invoicesDir = path.join(__dirname, '..', 'invoices');
-    if (!fs.existsSync(invoicesDir)) {
-      fs.mkdirSync(invoicesDir, { recursive: true });
+      // PDF content
+      doc.fontSize(20).text('Order Invoice', { align: 'center' });
+      doc.moveDown();
+      doc.fontSize(14).text(`Order ID: ${order.orderId}`);
+      doc.text(`Date: ${new Date().toLocaleDateString()}`);
+      doc.moveDown();
+      doc.text('Items:', { underline: true });
+
+      order.items.forEach(item => {
+        const productName = productMap[item.productId] || 'Unknown Product';
+        doc.fontSize(12).text(`${productName} - Size: ${item.size}, Quantity: ${item.quantity}`);
+      });
+
+      doc.moveDown();
+      doc.text(`Total Amount: ${order.totalAmount} LKR`, { align: 'right' });
+      doc.moveDown();
+      doc.text('Thank you for shopping with FreshNets!', { align: 'center' });
+
+      doc.end();
+    } catch (err) {
+      console.error('❌ Error in generateInvoicePDF:', err);
+      reject(err);
     }
-
-    const stream = fs.createWriteStream(filePath);
-    doc.pipe(stream);
-
-    // PDF content
-    doc.fontSize(20).text('Order Invoice', { align: 'center' });
-    doc.moveDown();
-    doc.fontSize(14).text(`Order ID: ${order.orderId}`);
-    doc.text(`Date: ${new Date().toLocaleDateString()}`);
-    doc.moveDown();
-    doc.text('Items:', { underline: true });
-
-    order.items.forEach(item => {
-      const productName = productMap[item.productId] || 'Unknown Product';
-      doc.fontSize(12).text(`${productName} - Size: ${item.size}, Quantity: ${item.quantity}`);
-    });
-
-    doc.moveDown();
-    doc.text(`Total Amount: ${order.totalAmount} LKR`, { align: 'right' });
-    doc.moveDown();
-    doc.text('Thank you for shopping with FreshNets!', { align: 'center' });
-
-    doc.end();
-
-    stream.on('finish', () => resolve(filePath));
-    stream.on('error', (err) => reject(err));
   });
 }
 
@@ -116,17 +114,14 @@ async function sendOrderConfirmationEmail(email, order, productMap) {
   `;
 
   try {
-    // Generate PDF
-    const pdfPath = await generateInvoicePDF(order, productMap);
-
-    // Read PDF file for attachment
-    const pdfBuffer = fs.readFileSync(pdfPath);
+    // Generate PDF in memory
+    const pdfBuffer = await generateInvoicePDF(order, productMap);
     const pdfBase64 = pdfBuffer.toString('base64');
 
     // Send email using SendGrid
     const msg = {
       to: email,
-      from: 'FreshNets <no-reply@freshnets.com>', // Use a verified sender email from SendGrid
+      from: 'FreshNets <pasansasmika333@gmail.com>', // Replace with verified sender
       subject: `Order Confirmation - ${order.orderId}`,
       html: html,
       attachments: [
@@ -141,15 +136,18 @@ async function sendOrderConfirmationEmail(email, order, productMap) {
 
     await sgMail.send(msg);
     console.log(`✅ Email with invoice sent to ${email}`);
-
-    // Clean up PDF file after sending
-    fs.unlink(pdfPath, (err) => {
-      if (err) console.error(`❌ Failed to delete PDF file: ${err}`);
-      else console.log(`🗑️ Deleted PDF file: ${pdfPath}`);
-    });
   } catch (error) {
-    console.error(`❌ Failed to send email to ${email}:`, error);
-    throw error; // Re-throw to handle in the caller
+    console.error(`❌ Failed to send email to ${email}:`, {
+      message: error.message,
+      code: error.code,
+      response: error.response?.body || 'No response body'
+    });
+    // Log error to MongoDB for production debugging
+    await Order.updateOne(
+      { orderId: order.orderId },
+      { $push: { emailErrors: { message: error.message, code: error.code, timestamp: new Date() } } }
+    );
+    throw error;
   }
 }
 
@@ -169,7 +167,8 @@ export async function createOrder(req, res) {
       userId,
       items,
       totalAmount,
-      status: 'Pending'
+      status: 'Pending',
+      emailErrors: [] // Initialize emailErrors array
     });
 
     await order.save();
