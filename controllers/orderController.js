@@ -3,7 +3,7 @@ import dotenv from 'dotenv';
 import Product from "../models/productModel.js";
 import Order from '../models/orderModel.js';
 import User from "../models/userModel.js";
-import sgMail from '@sendgrid/mail';
+import nodemailer from 'nodemailer';
 import pdfkit from 'pdfkit';
 import { fileURLToPath } from 'url';
 
@@ -12,8 +12,16 @@ dotenv.config();
 const PAYHERE_MERCHANT_ID = process.env.PAYHERE_MERCHANT_ID;
 const PAYHERE_SECRET = process.env.PAYHERE_SECRET;
 
-// Set SendGrid API key
-sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+// Configure Nodemailer with Brevo SMTP
+const transporter = nodemailer.createTransport({
+  host: process.env.BREVO_HOST,
+  port: parseInt(process.env.BREVO_PORT),
+  secure: false, // Use TLS
+  auth: {
+    user: process.env.BREVO_USER,
+    pass: process.env.BREVO_PASS
+  }
+});
 
 // Resolve __dirname for ES modules
 const __filename = fileURLToPath(import.meta.url);
@@ -95,7 +103,7 @@ async function generateInvoicePDF(order, productMap) {
   });
 }
 
-// Email sending function with PDF attachment using SendGrid
+// Email sending function with PDF attachment using Nodemailer and Brevo SMTP
 async function sendOrderConfirmationEmail(email, order, productMap) {
   const itemsList = order.items.map(item => {
     const productName = productMap[item.productId] || 'Unknown Product';
@@ -118,34 +126,30 @@ async function sendOrderConfirmationEmail(email, order, productMap) {
     const pdfBuffer = await generateInvoicePDF(order, productMap);
     const pdfBase64 = pdfBuffer.toString('base64');
 
-    // Send email using SendGrid
-    const msg = {
+    // Send email using Nodemailer
+    await transporter.sendMail({
+      from: 'FreshNets <pasansasmika333@gmail.com>', // Ensure this email is verified in Brevo
       to: email,
-      from: 'FreshNets <pasansasmika333@gmail.com>', // Replace with verified sender
       subject: `Order Confirmation - ${order.orderId}`,
       html: html,
       attachments: [
         {
-          content: pdfBase64,
           filename: `invoice_${order.orderId}.pdf`,
-          type: 'application/pdf',
-          disposition: 'attachment'
+          content: pdfBuffer,
+          contentType: 'application/pdf'
         }
       ]
-    };
+    });
 
-    await sgMail.send(msg);
     console.log(`✅ Email with invoice sent to ${email}`);
   } catch (error) {
     console.error(`❌ Failed to send email to ${email}:`, {
       message: error.message,
-      code: error.code,
-      response: error.response?.body || 'No response body'
+      response: error.response || 'No response'
     });
-    // Log error to MongoDB for production debugging
     await Order.updateOne(
       { orderId: order.orderId },
-      { $push: { emailErrors: { message: error.message, code: error.code, timestamp: new Date() } } }
+      { $push: { emailErrors: { message: error.message, timestamp: new Date() } } }
     );
     throw error;
   }
