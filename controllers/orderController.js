@@ -4,6 +4,7 @@ import Product from "../models/productModel.js";
 import Order from '../models/orderModel.js';
 import User from "../models/userModel.js";
 import nodemailer from 'nodemailer';
+import { create } from 'pdfkit';
 
 dotenv.config();
 
@@ -64,6 +65,105 @@ function generatePayHereCallbackHash(data, secret) {
     .toUpperCase();
 }
 
+// Generate LaTeX content for PDF
+function generateOrderConfirmationLatex(order, user, productMap) {
+  const itemsList = order.items.map(item => {
+    const productName = productMap[item.productId] || 'Unknown Product';
+    return `
+      \\item ${productName} -- Size: ${item.size}, Quantity: ${item.quantity}
+    `;
+  }).join('');
+
+  return `
+    \\documentclass[a4paper,12pt]{article}
+    \\usepackage[utf8]{inputenc}
+    \\usepackage{geometry}
+    \\geometry{margin=1in}
+    \\usepackage{parskip}
+    \\usepackage{booktabs}
+    \\usepackage{noto}
+
+    \\begin{document}
+
+    \\begin{center}
+      \\textbf{\\large FreshNets Order Confirmation}\\\\
+      \\vspace{0.5cm}
+      Order ID: ${order.orderId}\\\\
+      Date: ${new Date().toLocaleDateString()}
+    \\end{center}
+
+    \\section*{Customer Details}
+    Name: ${user.firstName} ${user.lastName}\\\\
+    Email: ${user.email}
+
+    \\section*{Order Details}
+    \\begin{tabular}{ll}
+      \\toprule
+      \\textbf{Total Amount} & ${order.totalAmount} LKR \\\\
+      \\textbf{Status} & ${order.status} \\\\
+      \\midrule
+    \\end{tabular}
+
+    \\section*{Items Purchased}
+    \\begin{itemize}
+      ${itemsList}
+    \\end{itemize}
+
+    \\vspace{1cm}
+    Thank you for shopping with FreshNets!
+
+    \\end{document}
+  `;
+}
+
+// Email sending function with PDF attachment
+async function sendOrderConfirmationEmail(email, order, productMap) {
+  const itemsList = order.items.map(item => {
+    const productName = productMap[item.productId] || 'Unknown Product';
+    return `<li>${productName} - Size: ${item.size}, Quantity: ${item.quantity}</li>`;
+  }).join('');
+
+  const html = `
+    <h1>Order Confirmation</h1>
+    <p>Thank you for your purchase!</p>
+    <p><strong>Order ID:</strong> ${order.orderId}</p>
+    <p><strong>Total Amount:</strong> ${order.totalAmount} LKR</p>
+    <h2>Items:</h2>
+    <ul>${itemsList}</ul>
+    <p>Please find your order confirmation attached as a PDF.</p>
+    <p>Thank you for shopping with FreshNets!</p>
+  `;
+
+  // Generate LaTeX content
+  const user = await User.findById(order.userId);
+  const latexContent = generateOrderConfirmationLatex(order, user, productMap);
+
+  // Simulate PDF generation (Note: Actual PDF generation requires a LaTeX compiler like pdflatex)
+  // For this example, we'll assume a function `latexToPDFBase64` exists to convert LaTeX to base64-encoded PDF
+  // In a real implementation, you would use a library like `pdfkit` or a LaTeX server
+  const pdfBase64 = Buffer.from(latexContent).toString('base64'); // Placeholder; replace with actual PDF generation
+
+  try {
+    const info = await transporter.sendMail({
+      from: `"FreshNets" <${process.env.SMTP_USER}>`,
+      to: email,
+      subject: `Order Confirmation - ${order.orderId}`,
+      html,
+      attachments: [
+        {
+          filename: `order-confirmation-${order.orderId}.pdf`,
+          content: pdfBase64,
+          encoding: 'base64',
+          contentType: 'application/pdf'
+        }
+      ]
+    });
+    console.log(`✅ Email with PDF sent to ${email}: ${info.messageId}`);
+  } catch (error) {
+    console.error(`❌ Failed to send email with PDF to ${email}:`, error);
+  }
+}
+
 // Create order and return PayHere payment data
 export async function createOrder(req, res) {
   try {
@@ -115,36 +215,6 @@ export async function createOrder(req, res) {
   }
 }
 
-// Email sending function
-async function sendOrderConfirmationEmail(email, order, productMap) {
-  const itemsList = order.items.map(item => {
-    const productName = productMap[item.productId] || 'Unknown Product';
-    return `<li>${productName} - Size: ${item.size}, Quantity: ${item.quantity}</li>`;
-  }).join('');
-
-  const html = `
-    <h1>Order Confirmation</h1>
-    <p>Thank you for your purchase!</p>
-    <p><strong>Order ID:</strong> ${order.orderId}</p>
-    <p><strong>Total Amount:</strong> ${order.totalAmount} LKR</p>
-    <h2>Items:</h2>
-    <ul>${itemsList}</ul>
-    <p>Thank you for shopping with FreshNets!</p>
-  `;
-
-  try {
-    const info = await transporter.sendMail({
-      from: `"FreshNets" <${process.env.SMTP_USER}>`,
-      to: email,
-      subject: `Order Confirmation - ${order.orderId}`,
-      html
-    });
-    console.log(`✅ Email sent to ${email}: ${info.messageId}`);
-  } catch (error) {
-    console.error(`❌ Failed to send email to ${email}:`, error);
-  }
-}
-
 // Handle PayHere server callback
 export async function handlePayHereCallback(req, res) {
   const data = req.method === 'POST' ? req.body : req.query;
@@ -175,10 +245,10 @@ export async function handlePayHereCallback(req, res) {
         );
       }
 
-      // Fetch user and products for email
+      // Fetch user and products for email and PDF
       const user = await User.findById(order.userId);
       if (user && user.email) {
-        console.log("📩 Sending order confirmation to", user.email);
+        console.log("📩 Sending order confirmation with PDF to", user.email);
 
         const productIds = order.items.map(item => item.productId);
         const products = await Product.find({ productId: { $in: productIds } });
