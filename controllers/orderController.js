@@ -20,11 +20,11 @@ const transporter = nodemailer.createTransport({
   auth: {
     user: process.env.BREVO_USER,
     pass: process.env.BREVO_PASS
+  },
+  tls: {
+    rejectUnauthorized: false // For development only, remove in production
   }
 });
-
-// Resolve __dirname for ES modules
-const __filename = fileURLToPath(import.meta.url);
 
 // Generate MD5 hash for initial payment
 function generatePayHereCheckoutHash(paymentData, secret) {
@@ -61,7 +61,7 @@ function generatePayHereCallbackHash(data, secret) {
     .toUpperCase();
 }
 
-// Generate PDF invoice in memory
+// Generate PDF invoice in memory with improved layout
 async function generateInvoicePDF(order, productMap) {
   return new Promise((resolve, reject) => {
     try {
@@ -77,23 +77,70 @@ async function generateInvoicePDF(order, productMap) {
         reject(err);
       });
 
-      // PDF content
-      doc.fontSize(20).text('Order Invoice', { align: 'center' });
-      doc.moveDown();
-      doc.fontSize(14).text(`Order ID: ${order.orderId}`);
-      doc.text(`Date: ${new Date().toLocaleDateString()}`);
-      doc.moveDown();
-      doc.text('Items:', { underline: true });
+      // PDF content with better formatting
+      doc.image('public/logo.png', 50, 45, { width: 50 });
+      doc.fillColor('#444444')
+         .fontSize(20)
+         .text('INVOICE', 200, 50, { align: 'right' });
+      
+      doc.fontSize(10)
+         .text(`Invoice #: ${order.orderId}`, 200, 80, { align: 'right' })
+         .text(`Date: ${new Date(order.createdAt).toLocaleDateString()}`, 200, 95, { align: 'right' })
+         .moveDown();
 
+      // Horizontal line
+      doc.strokeColor('#aaaaaa')
+         .lineWidth(1)
+         .moveTo(50, 120)
+         .lineTo(550, 120)
+         .stroke();
+
+      // Customer information
+      doc.fontSize(12)
+         .text('BILLED TO:', 50, 140)
+         .font('Helvetica-Bold')
+         .text(`${order.userId.firstName} ${order.userId.lastName}`, 50, 160)
+         .font('Helvetica')
+         .text(order.userId.email, 50, 175)
+         .moveDown();
+
+      // Invoice items table header
+      doc.font('Helvetica-Bold')
+         .fillColor('#000000')
+         .text('DESCRIPTION', 50, 220)
+         .text('SIZE', 250, 220)
+         .text('QTY', 350, 220)
+         .text('PRICE', 450, 220, { align: 'right' })
+         .moveDown();
+
+      // Invoice items
+      let y = 240;
       order.items.forEach(item => {
         const productName = productMap[item.productId] || 'Unknown Product';
-        doc.fontSize(12).text(`${productName} - Size: ${item.size}, Quantity: ${item.quantity}`);
+        doc.font('Helvetica')
+           .fillColor('#444444')
+           .text(productName, 50, y)
+           .text(item.size, 250, y)
+           .text(item.quantity.toString(), 350, y)
+           .text(`LKR ${item.price.toFixed(2)}`, 450, y, { align: 'right' });
+        y += 20;
       });
 
-      doc.moveDown();
-      doc.text(`Total Amount: ${order.totalAmount} LKR`, { align: 'right' });
-      doc.moveDown();
-      doc.text('Thank you for shopping with FreshNets!', { align: 'center' });
+      // Total amount
+      doc.moveTo(50, y + 20)
+         .lineTo(550, y + 20)
+         .stroke();
+      
+      doc.font('Helvetica-Bold')
+         .fillColor('#000000')
+         .text('TOTAL AMOUNT:', 350, y + 30)
+         .text(`LKR ${order.totalAmount.toFixed(2)}`, 450, y + 30, { align: 'right' });
+
+      // Footer
+      doc.fontSize(10)
+         .fillColor('#777777')
+         .text('Thank you for shopping with FreshNets!', 50, y + 60, { align: 'center' })
+         .text('If you have any questions, please contact support@freshnets.com', 50, y + 80, { align: 'center' });
 
       doc.end();
     } catch (err) {
@@ -103,54 +150,134 @@ async function generateInvoicePDF(order, productMap) {
   });
 }
 
-// Email sending function with PDF attachment using Nodemailer and Brevo SMTP
+// Improved email sending function with better error handling
 async function sendOrderConfirmationEmail(email, order, productMap) {
-  const itemsList = order.items.map(item => {
-    const productName = productMap[item.productId] || 'Unknown Product';
-    return `<li>${productName} - Size: ${item.size}, Quantity: ${item.quantity}</li>`;
-  }).join('');
-
-  const html = `
-    <h1>Order Confirmation</h1>
-    <p>Thank you for your purchase!</p>
-    <p><strong>Order ID:</strong> ${order.orderId}</p>
-    <p><strong>Total Amount:</strong> ${order.totalAmount} LKR</p>
-    <h2>Items:</h2>
-    <ul>${itemsList}</ul>
-    <p>Please find the invoice attached.</p>
-    <p>Thank you for shopping with FreshNets!</p>
-  `;
-
   try {
+    // Generate items list for email
+    const itemsList = order.items.map(item => {
+      const productName = productMap[item.productId] || 'Unknown Product';
+      return `
+        <tr>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd;">${productName}</td>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd; text-align: center;">${item.size}</td>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd; text-align: center;">${item.quantity}</td>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd; text-align: right;">LKR ${item.price.toFixed(2)}</td>
+        </tr>
+      `;
+    }).join('');
+
     // Generate PDF in memory
     const pdfBuffer = await generateInvoicePDF(order, productMap);
-    const pdfBase64 = pdfBuffer.toString('base64');
+
+    // HTML email template
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd;">
+        <div style="text-align: center; margin-bottom: 20px;">
+          <h1 style="color: #333;">Order Confirmation</h1>
+          <p style="color: #666;">Thank you for your purchase!</p>
+        </div>
+        
+        <div style="margin-bottom: 20px;">
+          <p><strong>Order ID:</strong> ${order.orderId}</p>
+          <p><strong>Order Date:</strong> ${new Date(order.createdAt).toLocaleDateString()}</p>
+          <p><strong>Total Amount:</strong> LKR ${order.totalAmount.toFixed(2)}</p>
+        </div>
+        
+        <h2 style="color: #333; border-bottom: 1px solid #ddd; padding-bottom: 10px;">Order Items</h2>
+        <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">
+          <thead>
+            <tr style="background-color: #f5f5f5;">
+              <th style="padding: 8px; text-align: left; border-bottom: 1px solid #ddd;">Product</th>
+              <th style="padding: 8px; text-align: center; border-bottom: 1px solid #ddd;">Size</th>
+              <th style="padding: 8px; text-align: center; border-bottom: 1px solid #ddd;">Qty</th>
+              <th style="padding: 8px; text-align: right; border-bottom: 1px solid #ddd;">Price</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${itemsList}
+          </tbody>
+        </table>
+        
+        <div style="text-align: center; margin-top: 30px; color: #777; font-size: 14px;">
+          <p>Please find your invoice attached. If you have any questions, contact us at support@freshnets.com</p>
+          <p>Thank you for shopping with FreshNets!</p>
+        </div>
+      </div>
+    `;
+
+    // Plain text version for email clients that don't support HTML
+    const text = `
+      Order Confirmation
+      ------------------
+      
+      Thank you for your purchase!
+      
+      Order ID: ${order.orderId}
+      Order Date: ${new Date(order.createdAt).toLocaleDateString()}
+      Total Amount: LKR ${order.totalAmount.toFixed(2)}
+      
+      Order Items:
+      ${order.items.map(item => {
+        const productName = productMap[item.productId] || 'Unknown Product';
+        return `${productName} - Size: ${item.size}, Qty: ${item.quantity}, Price: LKR ${item.price.toFixed(2)}`;
+      }).join('\n')}
+      
+      Please find your invoice attached.
+      
+      Thank you for shopping with FreshNets!
+    `;
 
     // Send email using Nodemailer
-    await transporter.sendMail({
-      from: 'FreshNets <pasansasmika333@gmail.com>', // Ensure this email is verified in Brevo
+    const mailOptions = {
+      from: 'FreshNets <noreply@freshnets.com>',
       to: email,
-      subject: `Order Confirmation - ${order.orderId}`,
+      subject: `Your Order Confirmation - #${order.orderId}`,
+      text: text,
       html: html,
       attachments: [
         {
-          filename: `invoice_${order.orderId}.pdf`,
+          filename: `Invoice_${order.orderId}.pdf`,
           content: pdfBuffer,
           contentType: 'application/pdf'
         }
       ]
+    };
+
+    // Verify transporter connection first
+    await transporter.verify((error, success) => {
+      if (error) {
+        console.error('❌ SMTP connection verification failed:', error);
+        throw error;
+      }
+      console.log('✅ SMTP server is ready to take our messages');
     });
 
-    console.log(`✅ Email with invoice sent to ${email}`);
+    // Send the email
+    const info = await transporter.sendMail(mailOptions);
+    console.log(`✅ Email sent to ${email}:`, info.messageId);
+
+    return info;
   } catch (error) {
     console.error(`❌ Failed to send email to ${email}:`, {
       message: error.message,
+      stack: error.stack,
       response: error.response || 'No response'
     });
+    
+    // Save the error to the database
     await Order.updateOne(
       { orderId: order.orderId },
-      { $push: { emailErrors: { message: error.message, timestamp: new Date() } } }
+      { 
+        $push: { 
+          emailErrors: { 
+            message: error.message,
+            stack: error.stack,
+            timestamp: new Date() 
+          } 
+        } 
+      }
     );
+    
     throw error;
   }
 }
@@ -166,21 +293,36 @@ export async function createOrder(req, res) {
       return res.status(401).json({ message: "User not authenticated" });
     }
 
+    // Validate items
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ message: "Invalid items data" });
+    }
+
+    // Create order with additional details
     const order = new Order({
       orderId,
       userId,
-      items,
+      items: items.map(item => ({
+        productId: item.productId,
+        productName: item.productName,
+        size: item.size,
+        quantity: item.quantity,
+        price: item.price,
+        image: item.image
+      })),
       totalAmount,
       status: 'Pending',
-      emailErrors: [] // Initialize emailErrors array
+      emailErrors: [],
+      createdAt: new Date(),
+      updatedAt: new Date()
     });
 
     await order.save();
 
     const paymentData = {
       merchant_id: PAYHERE_MERCHANT_ID,
-      return_url: `${process.env.FRONTEND_URL}/`,
-      cancel_url: `${process.env.FRONTEND_URL}/`,
+      return_url: `${process.env.FRONTEND_URL}/order-success/${orderId}`,
+      cancel_url: `${process.env.FRONTEND_URL}/order-canceled/${orderId}`,
       notify_url: `${process.env.BACKEND_URL}/api/orders/notify`,
       order_id: orderId,
       items: "Fashion Products",
@@ -199,20 +341,25 @@ export async function createOrder(req, res) {
 
     res.json({
       success: true,
-      paymentData
+      paymentData,
+      orderId
     });
   } catch (error) {
     console.error('💥 Error creating order:', error);
-    res.status(500).json({ message: 'Failed to create order' });
+    res.status(500).json({ 
+      message: 'Failed to create order',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 }
 
-// Handle PayHere server callback
+// Handle PayHere server callback with improved email handling
 export async function handlePayHereCallback(req, res) {
   const data = req.method === 'POST' ? req.body : req.query;
   console.log("📦 PayHere callback received:", data);
 
   try {
+    // Verify the callback signature
     const expectedSig = generatePayHereCallbackHash(data, PAYHERE_SECRET);
 
     if (expectedSig !== data.md5sig) {
@@ -222,37 +369,63 @@ export async function handlePayHereCallback(req, res) {
       return res.status(400).send('Invalid signature');
     }
 
-    const order = await Order.findOne({ orderId: data.order_id });
-    if (!order) return res.status(404).send('Order not found');
+    // Find and update the order
+    const order = await Order.findOne({ orderId: data.order_id }).populate('userId');
+    if (!order) {
+      console.error('❌ Order not found:', data.order_id);
+      return res.status(404).send('Order not found');
+    }
 
     if (data.status_code == '2') {
+      // Payment successful
       order.status = 'Paid';
       order.paymentId = data.payment_id;
+      order.updatedAt = new Date();
 
-      // Update stock
-      for (const item of order.items) {
-        await Product.updateOne(
+      // Update stock for each item
+      const stockUpdatePromises = order.items.map(item => 
+        Product.updateOne(
           { productId: item.productId, "sizes.size": item.size },
           { $inc: { "sizes.$.stock": -item.quantity } }
-        );
-      }
+        )
+      );
+      await Promise.all(stockUpdatePromises);
 
-      // Fetch user and products for email
-      const user = await User.findById(order.userId);
-      if (user && user.email) {
-        console.log("📩 Sending order confirmation to", user.email);
+      // Send confirmation email
+      if (order.userId && order.userId.email) {
+        console.log("📩 Preparing to send order confirmation to", order.userId.email);
 
-        const productIds = order.items.map(item => item.productId);
-        const products = await Product.find({ productId: { $in: productIds } });
-        const productMap = products.reduce((map, product) => {
-          map[product.productId] = product.name;
-          return map;
-        }, {});
+        try {
+          // Create product map for email
+          const productIds = order.items.map(item => item.productId);
+          const products = await Product.find({ productId: { $in: productIds } });
+          const productMap = products.reduce((map, product) => {
+            map[product.productId] = product.name;
+            return map;
+          }, {});
 
-        await sendOrderConfirmationEmail(user.email, order, productMap);
+          // Send email with retry logic
+          let retries = 3;
+          while (retries > 0) {
+            try {
+              await sendOrderConfirmationEmail(order.userId.email, order, productMap);
+              break;
+            } catch (emailError) {
+              retries--;
+              if (retries === 0) throw emailError;
+              console.log(`Retrying email send (${retries} attempts left)...`);
+              await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds before retry
+            }
+          }
+        } catch (emailError) {
+          console.error('❌ Failed to send order confirmation after retries:', emailError);
+          // Continue even if email fails - we don't want to fail the entire payment process
+        }
       }
     } else {
+      // Payment failed
       order.status = 'Failed';
+      order.updatedAt = new Date();
     }
 
     await order.save();
@@ -263,19 +436,48 @@ export async function handlePayHereCallback(req, res) {
   }
 }
 
-// Get single order details
+// Get single order details with improved error handling
 export async function getOrderDetails(req, res) {
   try {
     const orderId = req.params.orderId;
-    const order = await Order.findOne({ orderId }).populate('userId', 'firstName lastName email');
+    const order = await Order.findOne({ orderId })
+      .populate('userId', 'firstName lastName email phone')
+      .lean();
 
     if (!order) {
-      return res.status(404).json({ message: 'Order not found' });
+      return res.status(404).json({ 
+        success: false,
+        message: 'Order not found' 
+      });
     }
 
-    res.json(order);
+    // Get product details for each item
+    const productIds = order.items.map(item => item.productId);
+    const products = await Product.find({ productId: { $in: productIds } }, 'productId name');
+    const productMap = products.reduce((map, product) => {
+      map[product.productId] = product.name;
+      return map;
+    }, {});
+
+    // Enhance order items with product names
+    const enhancedItems = order.items.map(item => ({
+      ...item,
+      productName: productMap[item.productId] || item.productName
+    }));
+
+    res.json({
+      success: true,
+      order: {
+        ...order,
+        items: enhancedItems
+      }
+    });
   } catch (error) {
     console.error("💥 Error fetching order details:", error);
-    res.status(500).json({ message: 'Error fetching order details' });
+    res.status(500).json({ 
+      success: false,
+      message: 'Error fetching order details',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 }
