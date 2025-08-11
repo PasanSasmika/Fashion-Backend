@@ -4,8 +4,8 @@ import Product from "../models/productModel.js";
 import Order from '../models/orderModel.js';
 import User from "../models/userModel.js";
 import { fileURLToPath } from 'url';
-import * as Brevo from '@getbrevo/brevo';
 import PDFDocument from 'pdfkit';
+import nodemailer from 'nodemailer';
 
 dotenv.config();
 
@@ -177,48 +177,61 @@ export async function sendOrderEmail(req, res) {
     }
 
     // Verify Brevo configuration
-    if (!process.env.BREVO_PASS || !process.env.BREVO_USER) {
-      console.error('Brevo configuration missing');
+    if (!process.env.BREVO_HOST || !process.env.BREVO_PORT || !process.env.BREVO_USER || !process.env.BREVO_PASS) {
+      console.error('Brevo SMTP configuration missing');
       return res.status(500).json({ message: 'Email service configuration error' });
     }
 
-    // Initialize Brevo client
-    const client = new Brevo.TransactionalEmailsApi();
-    client.authentications['api-key'].apiKey = process.env.BREVO_PASS;
+    // Create SMTP transporter
+    const transporter = nodemailer.createTransport({
+      host: process.env.BREVO_HOST,
+      port: parseInt(process.env.BREVO_PORT),
+      secure: false, // Use STARTTLS for port 587
+      auth: {
+        user: process.env.BREVO_USER,
+        pass: process.env.BREVO_PASS,
+      },
+      tls: {
+        // Optional: Helps with self-signed certs or connection issues
+        rejectUnauthorized: false,
+      },
+    });
 
-    const sendSmtpEmail = new Brevo.SendSmtpEmail();
-    sendSmtpEmail.subject = `Order Confirmation #${order.orderId}`;
-    sendSmtpEmail.to = [{ email }];
-    sendSmtpEmail.sender = { name: 'Fashion Store', email: process.env.BREVO_USER };
-    sendSmtpEmail.htmlContent = `
-      <h1>Order Confirmation</h1>
-      <p>Order ID: ${order.orderId}</p>
-      <p>Status: ${order.status}</p>
-      <p>Total: LKR ${order.totalAmount.toFixed(2)}</p>
-      <h2>Items:</h2>
-      <ul>
-        ${order.items.map(item => `
-          <li>
-            ${item.productName} - Size: ${item.size}, Quantity: ${item.quantity}, Price: LKR ${item.price.toFixed(2)}
-          </li>
-        `).join('')}
-      </ul>
-    `;
+    // Email content
+    const mailOptions = {
+      from: `Fashion Store <${process.env.BREVO_USER}>`,
+      to: email,
+      subject: `Order Confirmation #${order.orderId}`,
+      html: `
+        <h1>Order Confirmation</h1>
+        <p>Order ID: ${order.orderId}</p>
+        <p>Status: ${order.status}</p>
+        <p>Total: LKR ${order.totalAmount.toFixed(2)}</p>
+        <h2>Items:</h2>
+        <ul>
+          ${order.items.map(item => `
+            <li>
+              ${item.productName} - Size: ${item.size}, Quantity: ${item.quantity}, Price: LKR ${item.price.toFixed(2)}
+            </li>
+          `).join('')}
+        </ul>
+      `,
+    };
 
     // Send email
-    const response = await client.sendTransacEmail(sendSmtpEmail);
-    console.log('Email sent successfully:', response);
+    const info = await transporter.sendMail(mailOptions);
+    console.log('Email sent successfully:', info.response);
     res.json({ message: 'Email sent successfully' });
   } catch (error) {
     console.error('Error sending email:', {
       message: error.message,
       stack: error.stack,
-      brevoResponse: error.response ? error.response.data : null
+      details: error.response ? error.response : null,
     });
     res.status(500).json({ 
       message: 'Error sending email', 
       error: error.message,
-      details: error.response ? error.response.data : 'No additional error details'
+      details: error.response ? error.response : 'No additional error details',
     });
   }
 }
