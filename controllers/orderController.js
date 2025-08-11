@@ -14,7 +14,7 @@ const PAYHERE_SECRET = process.env.PAYHERE_SECRET;
 const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST,
   port: process.env.SMTP_PORT,
-  secure: false, // port 587 -> TLS later
+  secure: false, // port 587 -> TLS
   auth: {
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS
@@ -166,7 +166,7 @@ export async function handlePayHereCallback(req, res) {
   }
 }
 
-// Email sending function
+// Email sending function with enhanced error handling
 async function sendOrderConfirmationEmail(email, order, productMap) {
   const itemsList = order.items.map(item => {
     const productName = productMap[item.productId] || 'Unknown Product';
@@ -193,10 +193,19 @@ async function sendOrderConfirmationEmail(email, order, productMap) {
   };
 
   try {
+    // Verify transporter configuration
+    await transporter.verify();
+    console.log("✅ Transporter is ready");
+
     await transporter.sendMail(mailOptions);
     console.log(`✅ Order confirmation email sent to ${email}`);
   } catch (error) {
     console.error(`❌ Error sending email to ${email}:`, error);
+    // Log detailed error for debugging
+    if (error.response) {
+      console.error('SMTP Response:', error.response);
+    }
+    throw error; // Re-throw to be caught by the caller
   }
 }
 
