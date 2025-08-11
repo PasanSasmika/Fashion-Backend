@@ -1,5 +1,5 @@
 import express from 'express';
-import { createOrder, getOrderDetails, handlePayHereCallback } from '../controllers/orderController.js';
+import { createOrder, generateOrderPDF, getOrderDetails, handlePayHereCallback, sendOrderEmail } from '../controllers/orderController.js';
 
 const orderRouter = express.Router();
 
