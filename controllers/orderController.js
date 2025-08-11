@@ -97,7 +97,7 @@ export async function createOrder(req, res) {
     });
   } catch (error) {
     console.error('💥 Error creating order:', error);
-    res.status(500).json({ message: 'Failed to create order' });
+    res.status(500).json({ message: 'Failed to create order', error: error.message });
   }
 }
 
@@ -155,7 +155,7 @@ export async function getOrderDetails(req, res) {
     res.json(order);
   } catch (error) {
     console.error("💥 Error fetching order details:", error);
-    res.status(500).json({ message: 'Error fetching order details' });
+    res.status(500).json({ message: 'Error fetching order details', error: error.message });
   }
 }
 
@@ -163,11 +163,26 @@ export async function getOrderDetails(req, res) {
 export async function sendOrderEmail(req, res) {
   try {
     const { email } = req.body;
-    const order = await Order.findOne({ orderId: req.params.orderId });
+    const orderId = req.params.orderId;
+
+    // Validate email
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ message: 'Invalid email address' });
+    }
+
+    // Fetch order
+    const order = await Order.findOne({ orderId }).populate('userId', 'firstName lastName email');
     if (!order) {
       return res.status(404).json({ message: 'Order not found' });
     }
 
+    // Verify Brevo configuration
+    if (!process.env.BREVO_PASS || !process.env.BREVO_USER) {
+      console.error('Brevo configuration missing');
+      return res.status(500).json({ message: 'Email service configuration error' });
+    }
+
+    // Initialize Brevo client
     const client = new Brevo.TransactionalEmailsApi();
     client.authentications['api-key'].apiKey = process.env.BREVO_PASS;
 
@@ -190,11 +205,21 @@ export async function sendOrderEmail(req, res) {
       </ul>
     `;
 
-    await client.sendTransacEmail(sendSmtpEmail);
+    // Send email
+    const response = await client.sendTransacEmail(sendSmtpEmail);
+    console.log('Email sent successfully:', response);
     res.json({ message: 'Email sent successfully' });
   } catch (error) {
-    console.error('Error sending email:', error);
-    res.status(500).json({ message: 'Error sending email', error });
+    console.error('Error sending email:', {
+      message: error.message,
+      stack: error.stack,
+      brevoResponse: error.response ? error.response.data : null
+    });
+    res.status(500).json({ 
+      message: 'Error sending email', 
+      error: error.message,
+      details: error.response ? error.response.data : 'No additional error details'
+    });
   }
 }
 
@@ -229,6 +254,6 @@ export async function generateOrderPDF(req, res) {
     doc.end();
   } catch (error) {
     console.error('Error generating PDF:', error);
-    res.status(500).json({ message: 'Error generating PDF', error });
+    res.status(500).json({ message: 'Error generating PDF', error: error.message });
   }
 }
