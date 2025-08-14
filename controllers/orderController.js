@@ -283,3 +283,17 @@ export function getAllOrders(req, res) {
       res.status(500).json({ message: 'Error fetching orders' });
     });
 }
+
+
+//Get orders by id
+
+export async function getOrdersByUserId(req, res) {
+  try {
+    const userId = req.user._id;
+    const orders = await Order.find({ userId }).sort({ createdAt: -1 });
+    res.json(orders);
+  } catch (error) {
+    console.error('Error fetching user orders:', error);
+    res.status(500).json({ message: 'Error fetching orders', error: error.message });
+  }
+}
