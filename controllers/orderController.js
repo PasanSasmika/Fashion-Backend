@@ -269,3 +269,17 @@ export async function generateOrderPDF(req, res) {
     res.status(500).json({ message: 'Error generating PDF', error: error.message });
   }
 }
+
+
+  // Get all bookings
+export function getAllOrders(req, res) {
+  Order.find({})
+    .populate('userId', 'firstName lastName email')
+    .then((orders) => {
+      res.json(orders);
+    })
+    .catch(err => {
+      console.error('Error fetching orders:', err);
+      res.status(500).json({ message: 'Error fetching orders' });
+    });
+}
