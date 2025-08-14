@@ -284,13 +284,20 @@ export function getAllOrders(req, res) {
     });
 }
 
-
-//Get orders by id
-
-export async function getOrdersByUserId(req, res) {
+// Get orders for the authenticated user
+export async function viewOrderByUser(req, res) {
   try {
     const userId = req.user._id;
-    const orders = await Order.find({ userId }).sort({ createdAt: -1 });
+    if (!userId) {
+      return res.status(401).json({ message: "User not authenticated" });
+    }
+
+    const orders = await Order.find({ userId }).sort({ createdAt: -1 }).populate('userId', 'firstName lastName email');
+    
+    if (!orders.length) {
+      return res.status(404).json({ message: 'No orders found for this user' });
+    }
+
     res.json(orders);
   } catch (error) {
     console.error('Error fetching user orders:', error);

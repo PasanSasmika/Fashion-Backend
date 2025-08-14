@@ -1,11 +1,11 @@
 import express from 'express';
-import { createOrder, generateOrderPDF, getAllOrders, getOrderDetails, getOrdersByUserId, handlePayHereCallback, sendOrderEmail } from '../controllers/orderController.js';
+import { createOrder, generateOrderPDF, getAllOrders, getOrderDetails, handlePayHereCallback, sendOrderEmail, viewOrderByUser } from '../controllers/orderController.js';
 
 const orderRouter = express.Router();
 
 orderRouter.post("/", createOrder);
 orderRouter.get("/", getAllOrders);
-orderRouter.get("/user/orders", getOrdersByUserId);
+orderRouter.get("/my-orders", viewOrderByUser);
 orderRouter.get("/:orderId", getOrderDetails);
 orderRouter.post("/notify", handlePayHereCallback); 
 orderRouter.get("/notify", handlePayHereCallback);
